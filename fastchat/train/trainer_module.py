@@ -1,14 +1,10 @@
 import sys
-
-from torch.nn import CrossEntropyLoss
-from transformers import Trainer
-
-
 from typing import List, Optional, Tuple, Union
+
 import torch
 import torch.utils.checkpoint
-from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-from transformers import LlamaForCausalLM
+from torch.nn import CrossEntropyLoss
+from transformers import LlamaForCausalLM, Trainer
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
@@ -67,8 +63,33 @@ def compute_contrastive_loss(sample_type, logits, labels, vocab_size):
     return loss
 
 
+def compute_loss(logits, labels):
+    """
+    expecting number of elements to be divisbile by 3
+    """
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+    # Flatten the tokens
+    # Enable model parallelism
+    shift_labels = shift_labels.to(shift_logits.device)
+    count_invals = 0
+    loss_fct = CrossEntropyLoss()
+    loss = loss_fct(shift_logits.permute(0, 2, 1), shift_labels)
+    if torch.isnan(loss):
+        breakpoint()
+        loss = torch.tensor(0.0).to(shift_labels.device)
+        count_invals += 1
+
+    print(f"count NANs: {count_invals}")
+    print(f"div factor: {shift_labels.shape[0]-count_invals}")
+    loss = loss / (shift_labels.shape[0] - count_invals)
+    print(f"\t\t\tOverall loss={loss}")
+    return loss
+
+
 class CustomTrainer(Trainer):
-    def compute_loss(self, model, inputs, return_outputs=False):
+    # modified by emrys
+    def _compute_loss(self, model, inputs, return_outputs=False):
         """
         How the loss is computed by Trainer. By default, all models return the loss in the first element.
 
@@ -100,8 +121,62 @@ class CustomTrainer(Trainer):
         # print('Loss:',loss)
         return (loss, outputs) if return_outputs else loss
 
+    # added by emrys
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """
+        How the loss is computed by Trainer. By default, all models return the loss in the first element.
 
-# LLaMA custom loss
+        Subclass and override for custom behavior.
+        """
+        if self.label_smoother is not None and "labels" in inputs:
+            labels = inputs.pop("labels")
+        else:
+            labels = None
+
+        outputs = model(**inputs)
+
+        # Save past state if it exists
+        # TODO: this needs to be fixed and made cleaner later.
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        # We don't use .loss here since the model may return tuples instead of ModelOutput.
+        # loss = outputs["loss"]['sum_loss']
+        mid = len(outputs["logits"]) // 2
+        positive_loss = compute_loss(
+            outputs["logits"][:mid],
+            outputs["loss"]["labels"][:mid],
+        )
+        negative_loss = compute_loss(
+            outputs["logits"][mid:], outputs["loss"]["labels"][mid:]
+        )
+        loss = positive_loss - 0.1 * negative_loss
+        # print('Loss:',loss)
+        return (loss, outputs) if return_outputs else loss
+
+    # LLaMA custom loss
+
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only: bool,
+        ignore_keys: Optional[List[str]] = None,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        outputs = model(**inputs)
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+        mid = len(outputs["logits"]) // 2
+        positive_loss = compute_loss(
+            outputs["logits"][:mid],
+            outputs["loss"]["labels"][:mid],
+        )
+        negative_loss = compute_loss(
+            outputs["logits"][mid:], outputs["loss"]["labels"][mid:]
+        )
+        loss = positive_loss - 0.1 * negative_loss
+
+        return loss, outputs, outputs["loss"]["labels"]
 
 
 class CustomLlamaForCausalLM(LlamaForCausalLM):

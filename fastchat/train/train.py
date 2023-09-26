@@ -24,6 +24,7 @@ import torch
 import transformers
 from fastchat.conversation import SeparatorStyle
 from fastchat.model.model_adapter import get_conversation_template
+from pydantic import BaseModel
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import Trainer
@@ -257,6 +258,88 @@ class LazySupervisedDataset(Dataset):
         return ret
 
 
+class ConstrativeSample(BaseModel):
+    positive: dict[str, torch.Tensor]
+    negative: Optional[dict[str, torch.Tensor]]
+    neutral: Optional[dict[str, torch.Tensor]]
+
+    class Config:
+        arbitrary_types_allowed = True
+
+
+class ContrastiveSupervisedDataset(Dataset):
+    """Dataset for supervised fine-tuning."""
+
+    def __init__(self, raw_data, tokenizer: transformers.PreTrainedTokenizer):
+        super().__init__()
+        self.tokenizer = tokenizer
+
+        rank0_print("Formatting inputs...Skip in lazy mode")
+        self.tokenizer = tokenizer
+        self.raw_data_pos, self.raw_data_neg, self.raw_data_neutral = raw_data
+        self.cached_data_dict = {}
+
+    # changed by emrys
+    def add_data_tag(self, tag):
+        return NotImplementedError("This function is not fit")
+
+    # changed by emrys
+    def make_contrastive_data(self):
+        self.raw_data = []
+
+        if self.raw_data_neg:
+            assert len(self.raw_data_pos) == len(self.raw_data_neg)
+        if self.raw_data_neutral:
+            assert len(self.raw_data_pos) == len(self.raw_data_neutral)
+            assert len(self.raw_data_neg) == len(self.raw_data_neutral)
+
+        for i in tqdm(range(len(self.raw_data_pos))):
+            lst = []
+            lst.append(self.raw_data_pos[i])
+            if self.raw_data_neg:
+                lst.append(self.raw_data_neg[i])
+            else:
+                lst.append(None)
+            if self.raw_data_neutral:
+                lst.append(self.raw_data_neutral[i])
+            else:
+                lst.append(None)
+            self.raw_data.append(lst)
+
+    def __len__(self):
+        return len(self.raw_data)
+
+    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+        if i in self.cached_data_dict:
+            return self.cached_data_dict[i]
+
+        sample = ConstrativeSample(
+            positive=preprocess([self.raw_data[i][0]["conversations"]], self.tokenizer),
+            negative=preprocess([self.raw_data[i][1]["conversations"]], self.tokenizer)
+            if self.raw_data[i][1]
+            else None,
+            neutral=preprocess([self.raw_data[i][2]["conversations"]], self.tokenizer)
+            if self.raw_data[i][2]
+            else None,
+        )
+
+        # Commented by emrys
+        # if "tag" in self.raw_data[i]:
+        #     tag = self.raw_data[i]["tag"]
+        #     if tag == "pos":
+        #         ret["input_ids"][0] += 1
+        #     if tag == "neg":
+        #         ret["input_ids"][0] += 2
+        #     if tag == "nut":
+        #         ret["input_ids"][0] += 3
+        #     # below may not be needed
+        #     ret["tag"] = tag
+
+        self.cached_data_dict[i] = sample
+
+        return sample
+
+
 def make_supervised_data_module(
     tokenizer: transformers.PreTrainedTokenizer, data_args
 ) -> Dict:
@@ -280,7 +363,6 @@ def make_supervised_data_module(
     train_dataset = dataset_cls(train_raw_data, tokenizer=tokenizer)
     eval_dataset = dataset_cls(eval_raw_data, tokenizer=tokenizer)
     return dict(train_dataset=train_dataset, eval_dataset=eval_dataset)
-
 
 def make_supervised_data_module_nut(
     tokenizer: transformers.PreTrainedTokenizer, data_args
@@ -307,7 +389,6 @@ def make_supervised_data_module_nut(
     train_dataset = dataset_cls(train_raw_data, tokenizer=tokenizer)
     eval_dataset = dataset_cls(eval_raw_data, tokenizer=tokenizer)
     return dict(train_dataset=train_dataset, eval_dataset=eval_dataset)
-
 
 def make_supervised_data_module_pos_neg(
     tokenizer: transformers.PreTrainedTokenizer, data_args
@@ -349,6 +430,47 @@ def make_supervised_data_module_pos_neg(
         eval_dataset_pos=eval_dataset_pos,
         train_dataset_neg=train_dataset_neg,
         eval_dataset_neg=eval_dataset_neg,
+    )
+
+def make_supervised_data_module_contrastive(
+    tokenizer: transformers.PreTrainedTokenizer, data_args
+) -> Dict:
+    """Make dataset and collator for supervised fine-tuning."""
+    dataset_cls = (
+        ContrastiveSupervisedDataset if data_args.lazy_preprocess else SupervisedDataset
+    )
+    rank0_print("Loading data...")
+    raw_data_pos = json.load(open(data_args.data_path_pos, "r"))
+    raw_data_neg = json.load(open(data_args.data_path_neg, "r"))
+
+    # Split train/test
+    assert len(raw_data_pos) == len(raw_data_neg)
+
+    np.random.seed(0)
+    perm = np.random.permutation(len(raw_data_pos))
+    split = int(len(perm) * 0.98)
+    train_indices = perm[:split]
+    eval_indices = perm[split:]
+
+    train_raw_data_pos = [raw_data_pos[i] for i in train_indices]
+    eval_raw_data_pos = [raw_data_pos[i] for i in eval_indices]
+
+    train_raw_data_neg = [raw_data_neg[i] for i in train_indices]
+    eval_raw_data_neg = [raw_data_neg[i] for i in eval_indices]
+
+    rank0_print(f"#train pos {len(train_raw_data_pos)}, #eval {len(eval_raw_data_pos)}")
+    rank0_print(f"#train neg {len(train_raw_data_neg)}, #eval {len(eval_raw_data_neg)}")
+
+    train_dataset = dataset_cls(
+        [train_raw_data_pos, train_raw_data_neg, None], tokenizer=tokenizer
+    )
+    eval_dataset = dataset_cls(
+        [eval_raw_data_pos, eval_raw_data_neg, None], tokenizer=tokenizer
+    )
+
+    return dict(
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
     )
 
 

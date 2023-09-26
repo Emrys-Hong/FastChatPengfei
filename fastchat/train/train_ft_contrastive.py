@@ -22,18 +22,15 @@ import typing
 from dataclasses import dataclass, field
 
 import torch
+import transformers
 from deepspeed import zero
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
-
-dir_path = os.path.dirname(os.path.realpath(__file__))
-sys.path.insert(0, dir_path + "/../..")
-
-import transformers
 from fastchat.train.train import (
     DataArguments,
     ModelArguments,
     TrainingArguments,
     make_supervised_data_module,
+    make_supervised_data_module_contrastive,
     make_supervised_data_module_nut,
     make_supervised_data_module_pos_neg,
 )
@@ -76,38 +73,67 @@ def train():
     )
     tokenizer.pad_token = tokenizer.unk_token
 
-    data_module_pos_neg = make_supervised_data_module_pos_neg(
+    data_module_contrastive = make_supervised_data_module_contrastive(
         tokenizer=tokenizer, data_args=data_args
     )
-    # data_module_nut = make_supervised_data_module_nut(tokenizer=tokenizer, data_args=data_args)
+    train_dataset, eval_dataset = (
+        data_module_contrastive["train_dataset"],
+        data_module_contrastive["eval_dataset"],
+    )
+    # data_module_pos_neg = make_supervised_data_module_pos_neg(
+    #     tokenizer=tokenizer, data_args=data_args
+    # )
 
-    train_dataset_pos = data_module_pos_neg["train_dataset_pos"]
-    train_dataset_pos.add_data_tag("pos")
+    # train_dataset_pos = data_module_pos_neg["train_dataset_pos"]
+    # train_dataset_pos.add_data_tag("pos")
 
-    train_dataset_neg = data_module_pos_neg["train_dataset_neg"]
-    train_dataset_neg.add_data_tag("neg")
+    # train_dataset_neg = data_module_pos_neg["train_dataset_neg"]
+    # train_dataset_neg.add_data_tag("neg")
 
-    # train_dataset_nut = data_module_nut['train_dataset']
-    # train_dataset_nut.add_data_tag('nut')
+    # eval_dataset_pos = data_module_pos_neg["eval_dataset_pos"]
+    # eval_dataset_pos.add_data_tag("pos")
 
-    eval_dataset_pos = data_module_pos_neg["eval_dataset_pos"]
-    eval_dataset_pos.add_data_tag("pos")
+    # eval_dataset_neg = data_module_pos_neg["eval_dataset_neg"]
+    # eval_dataset_neg.add_data_tag("neg")
 
-    eval_dataset_neg = data_module_pos_neg["eval_dataset_neg"]
-    eval_dataset_neg.add_data_tag("neg")
+    # train_dataset = copy.deepcopy(train_dataset_pos)
+    # train_dataset.make_contrastive_data(train_dataset_pos, train_dataset_neg)
+    train_dataset = copy.deepcopy(train_dataset)
+    train_dataset.make_contrastive_data()
 
-    train_dataset = copy.deepcopy(train_dataset_pos)
-    train_dataset.make_contrastive_data(train_dataset_pos, train_dataset_neg)
-
-    eval_dataset = copy.deepcopy(train_dataset)
+    eval_dataset = copy.deepcopy(eval_dataset)
+    eval_dataset.make_contrastive_data()
 
     # excluding negative data from eval (for now)
-    eval_dataset.make_contrastive_data(eval_dataset_pos)
+    # eval_dataset.make_contrastive_data(eval_dataset_pos)
 
     # if you want to include negative data as well, please uncomment the following line and comment the above
     # eval_dataset.make_contrastive_data(eval_dataset_pos, eval_dataset_neg, eval_dataset_nut)
 
     data_module = {"train_dataset": train_dataset, "eval_dataset": eval_dataset}
+
+    def collator(inputs):
+        input_positive = [o.positive for o in inputs]
+        input_negative = [o.negative for o in inputs]
+        input_neutral = [o.neutral for o in inputs]
+
+        # The first half is positive and the second half is negative
+        inputs = input_positive + input_negative
+        device = model.device
+        inputs = dict(
+            input_ids=torch.cat([o["input_ids"] for o in inputs], dim=0)
+            .contiguous()
+            .to(device),
+            attention_mask=torch.cat([o["attention_mask"] for o in inputs], dim=0)
+            .contiguous()
+            .to(device),
+            labels=torch.cat([o["labels"] for o in inputs], dim=0)
+            .contiguous()
+            .to(device),
+        )
+        inputs["input_ids"][:, 0] = 1
+
+        return inputs
 
     if torch.cuda.device_count() > 1:
         model.is_parallelizable = True
@@ -119,7 +145,11 @@ def train():
     )
 
     trainer = CustomTrainer(
-        model=model, tokenizer=tokenizer, args=training_args, **data_module
+        model=model,
+        tokenizer=tokenizer,
+        args=training_args,
+        data_collator=collator,
+        **data_module,
     )
 
     # print(f"\n\n Device Map: {model.hf_device_map}")
@@ -127,6 +157,7 @@ def train():
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
+        # trainer.evaluate()
 
     trainer.save_state()
 
@@ -136,3 +167,8 @@ def train():
 if __name__ == "__main__":
     with torch.autocast("cuda"):
         train()
+
+
+"""
+deepspeed --num_gpus=4 fastchat/train/train_ft_contrastive.py     --ddp_timeout=360000     --output_dir "/data/rishabh/flacuna/"     --deepspeed "deepspeed_configs/fp16_ft_7b.json" --fp16 True     --model_name_or_path "lmsys/vicuna-7b-v1.3"     --data_path_pos "data/data_h1_finetune.json"     --data_path_neg "data/data_lh1_finetune.json"     --per_device_train_batch_size 4 --per_device_eval_batch_size 4 --gradient_accumulation_steps 8     --num_train_epochs 3 --evaluation_strategy "steps" --eval_steps 20    --save_strategy "steps" --save_steps 100 --save_total_limit 20     --learning_rate 2e-5 --weight_decay 0. --warmup_ratio 0.0001 --lr_scheduler_type "cosine" --logging_steps 10     --model_max_length 1280     --gradient_checkpointing True --lazy_preprocess True --disable_tqdm False
+"""

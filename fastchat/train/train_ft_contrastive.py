@@ -119,17 +119,16 @@ def train():
 
         # The first half is positive and the second half is negative
         inputs = input_positive + input_negative
-        device = model.device
+        # device = model.device
         inputs = dict(
-            input_ids=torch.cat([o["input_ids"] for o in inputs], dim=0)
-            .contiguous()
-            .to(device),
-            attention_mask=torch.cat([o["attention_mask"] for o in inputs], dim=0)
-            .contiguous()
-            .to(device),
-            labels=torch.cat([o["labels"] for o in inputs], dim=0)
-            .contiguous()
-            .to(device),
+            input_ids=torch.cat([o["input_ids"] for o in inputs], dim=0).contiguous(),
+            # .to(device),
+            attention_mask=torch.cat(
+                [o["attention_mask"] for o in inputs], dim=0
+            ).contiguous(),
+            # .to(device),
+            labels=torch.cat([o["labels"] for o in inputs], dim=0).contiguous(),
+            # .to(device),
         )
         inputs["input_ids"][:, 0] = 1
 

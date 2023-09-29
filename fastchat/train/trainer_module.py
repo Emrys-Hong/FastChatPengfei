@@ -87,6 +87,24 @@ def compute_loss(logits, labels):
     return loss
 
 
+def nested_detach(obj):
+    """
+    Recursively detach tensors in an object.
+
+    :param obj: The object which may contain tensor(s) to detach.
+    :type obj: torch.Tensor or dict
+    :return: The object with detached tensor(s).
+    :rtype: type(obj)
+    """
+    if isinstance(obj, torch.Tensor):
+        return obj.detach()
+    elif isinstance(obj, dict):
+        return {k: nested_detach(v) for k, v in obj.items()}
+    else:
+        breakpoint()
+        raise TypeError("Object must be a tensor or a (nested) dictionary of tensors.")
+
+
 class CustomTrainer(Trainer):
     # modified by emrys
     def _compute_loss(self, model, inputs, return_outputs=False):
@@ -163,18 +181,29 @@ class CustomTrainer(Trainer):
         prediction_loss_only: bool,
         ignore_keys: Optional[List[str]] = None,
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
-        outputs = model(**inputs)
-        if self.args.past_index >= 0:
-            self._past = outputs[self.args.past_index]
-        mid = len(outputs["logits"]) // 2
-        positive_loss = compute_loss(
-            outputs["logits"][:mid],
-            outputs["loss"]["labels"][:mid],
-        )
-        negative_loss = compute_loss(
-            outputs["logits"][mid:], outputs["loss"]["labels"][mid:]
-        )
-        loss = positive_loss - 0.1 * negative_loss
+        # device = model.device
+        # for k in inputs:
+        #     inputs[k] = inputs[k].to(device)
+        inputs = self._prepare_inputs(inputs)
+        with torch.no_grad():
+            outputs = model(**inputs)
+            if self.args.past_index >= 0:
+                self._past = outputs[self.args.past_index]
+            mid = len(outputs["logits"]) // 2
+            positive_loss = compute_loss(
+                outputs["logits"][:mid],
+                outputs["loss"]["labels"][:mid],
+            )
+            negative_loss = compute_loss(
+                outputs["logits"][mid:], outputs["loss"]["labels"][mid:]
+            )
+            loss = positive_loss - 0.1 * negative_loss
+            loss, positive_loss, negative_loss, outputs = (
+                nested_detach(loss),
+                nested_detach(positive_loss),
+                nested_detach(negative_loss),
+                nested_detach(outputs)
+            )
 
         return loss, outputs, outputs["loss"]["labels"]
 

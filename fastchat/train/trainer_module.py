@@ -96,6 +96,7 @@ def nested_detach(obj):
     :return: The object with detached tensor(s).
     :rtype: type(obj)
     """
+    if isinstance(obj, int): return obj
     if isinstance(obj, torch.Tensor):
         return obj.detach()
     elif isinstance(obj, dict):

@@ -96,7 +96,8 @@ def nested_detach(obj):
     :return: The object with detached tensor(s).
     :rtype: type(obj)
     """
-    if isinstance(obj, int): return obj
+    if isinstance(obj, int):
+        return obj
     if isinstance(obj, torch.Tensor):
         return obj.detach()
     elif isinstance(obj, dict):
@@ -199,14 +200,10 @@ class CustomTrainer(Trainer):
                 outputs["logits"][mid:], outputs["loss"]["labels"][mid:]
             )
             loss = positive_loss - 0.1 * negative_loss
-            loss, positive_loss, negative_loss, outputs = (
-                nested_detach(loss),
-                nested_detach(positive_loss),
-                nested_detach(negative_loss),
-                nested_detach(outputs)
-            )
+            outputs = nested_detach(outputs)
 
-        return loss, outputs, outputs["loss"]["labels"]
+        # return loss, outputs['logits'], outputs["loss"]["labels"]
+        return loss, None, None
 
 
 class CustomLlamaForCausalLM(LlamaForCausalLM):

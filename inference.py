@@ -2,11 +2,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import LlamaForCausalLM, LlamaTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 
-model_name = "/data/rishabh/flacuna/dev/"
+# model_name = "/data/rishabh/flacuna/dev/"
 #model_name = "/mnt/data_4tb/rishabh/flacuna/checkpoint-350"
 #model_name = "/mnt/data_4tb/rishabh/flacuna/best_19Jul_checkpoint-500"
 #model_name = "/mnt/data_4tb/rishabh/flacuna/checkpoint-100"
 #model_name = "lmsys/vicuna-7b-v1.3"
+model_name = "./checkpoint-200"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="right", use_fast=False)
 model_8bit = LlamaForCausalLM.from_pretrained(model_name, device_map="auto", load_in_8bit=True)

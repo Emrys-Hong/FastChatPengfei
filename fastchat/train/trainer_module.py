@@ -80,10 +80,10 @@ def compute_loss(logits, labels):
         loss = torch.tensor(0.0).to(shift_labels.device)
         count_invals += 1
 
-    print(f"count NANs: {count_invals}")
-    print(f"div factor: {shift_labels.shape[0]-count_invals}")
+    # print(f"count NANs: {count_invals}")
+    # print(f"div factor: {shift_labels.shape[0]-count_invals}")
     loss = loss / (shift_labels.shape[0] - count_invals)
-    print(f"\t\t\tOverall loss={loss}")
+    # print(f"\t\t\tOverall loss={loss}")
     return loss
 
 
@@ -199,7 +199,10 @@ class CustomTrainer(Trainer):
             negative_loss = compute_loss(
                 outputs["logits"][mid:], outputs["loss"]["labels"][mid:]
             )
-            loss = positive_loss - 0.1 * negative_loss
+            if negative_loss < 1:
+                loss = positive_loss - 0.1 * negative_loss
+            else:
+                loss = positive_loss + negative_loss
             outputs = nested_detach(outputs)
 
         # return loss, outputs['logits'], outputs["loss"]["labels"]

@@ -1,10 +1,17 @@
+import json
 import sys
 from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.utils.checkpoint
 from torch.nn import CrossEntropyLoss
-from transformers import LlamaForCausalLM, Trainer
+from transformers import (
+    LlamaForCausalLM,
+    Trainer,
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
+)
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
@@ -284,3 +291,71 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+
+def gen_prompt(q, ctx):
+    prompt = ctx.replace("<question>", q.strip())
+    return prompt
+
+
+def get_context(file_name):
+    f = open(file_name, "r")
+    f = f.read()
+    return f
+
+
+def process_data(dataset, ctx, nsamples):
+    f = open(dataset)
+
+    data = json.load(f)
+
+    if "harmfulq" in dataset:
+        topics = []
+        subtopics = []
+        prompt_que = []
+        orig_que = []
+        for topic in data.keys():
+            for subtopic in data[topic].keys():
+                for q in data[topic][subtopic]:
+                    orig_que.append(q)
+                    prompt_que.append(gen_prompt(q, ctx))
+                    topics.append(topic)
+                    subtopics.append(subtopic)
+
+    else:
+        prompt_que = [gen_prompt(q, ctx) for q in data]
+        orig_que = data
+        topics, subtopics = [], []
+
+    if nsamples == -1:
+        nsamples = len(prompt_que)
+
+    return (
+        prompt_que[:nsamples],
+        orig_que[:nsamples],
+        topics[:nsamples],
+        subtopics[:nsamples],
+    )
+
+
+class PrintInferenceResultsCallback(TrainerCallback):
+    @torch.no_grad()
+    def on_evaluate(self, args, state, control, logs=None, **kwargs):
+        # This method gets triggered after an evaluation is performed.
+        # Use the trainer's `predict` method to run inference and print results.
+
+        tokenizer = kwargs["tokenizer"]
+        dataset = "harmful_questions/dangerousqa.json"
+        context = get_context("red_prompts/cou.txt")
+        prompt_que, orig_que, topics, subtopics = process_data(dataset, context, 1)
+
+        inputs = prompt_que[0]
+        print("inputs: ", inputs)
+        inputs = tokenizer(
+            [inputs], return_tensors="pt", truncation=True, padding=True
+        ).to("cuda")
+        generate_ids = kwargs["model"].generate(**inputs, max_new_tokens=500)
+        response = tokenizer.batch_decode(generate_ids, skip_special_tokens=True)[0]
+
+        print("response: ", response)
+        print('*'*50)

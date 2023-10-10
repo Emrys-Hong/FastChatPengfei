@@ -36,7 +36,11 @@ from fastchat.train.train import (
 )
 from transformers import AutoModelForCausalLM, LlamaForCausalLM, LlamaTokenizer, Trainer
 
-from trainer_module import CustomLlamaForCausalLM, CustomTrainer
+from trainer_module import (
+    CustomLlamaForCausalLM,
+    CustomTrainer,
+    PrintInferenceResultsCallback,
+)
 
 
 def train():
@@ -148,6 +152,7 @@ def train():
         tokenizer=tokenizer,
         args=training_args,
         data_collator=collator,
+        callbacks=[PrintInferenceResultsCallback],
         **data_module,
     )
 
